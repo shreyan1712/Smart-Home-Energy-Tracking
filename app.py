@@ -4,11 +4,15 @@ import pandas as pd
 import os
 import shutil
 import platform
+import subprocess
+import sys
 
+# Auto-install matplotlib if missing
 try:
     import matplotlib.pyplot as plt
 except ImportError:
-    plt = None
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "matplotlib"])
+    import matplotlib.pyplot as plt
 
 # Supabase Connection check
 try:
@@ -229,7 +233,6 @@ def main_app():
 
     # Helper maps
     appliances_dict = {a["app_id"]: create_appliance_obj(a["app_id"], a["name"], a["category"], a["watts"]) for a in appliances_list}
-    active_devices = set(appliances_dict.keys())
 
     # --- 1. Add Appliance ---
     if menu == "1. Add appliance":
@@ -340,11 +343,19 @@ def main_app():
 
     # --- 5. Show All Usage Logs ---
     elif menu == "5. Show all usage logs":
-        st.header("📊 All Usage Logs")
+        st.header("📊 All Usage Logs & Breakdown")
         if not usage_logs:
             st.info("No logs yet.")
         else:
             df = pd.DataFrame(usage_logs)
+            total_all_units = df["units"].sum()
+            total_all_cost = calculate_bill(total_all_units)
+            
+            col1, col2 = st.columns(2)
+            col1.metric("Total Units Consumed (All Logs)", f"{round(total_all_units, 2)} kWh")
+            col2.metric("Total Estimated Cost", f"Rs {round(total_all_cost, 2)}")
+            
+            st.markdown("### Detailed Logs Table")
             st.dataframe(df[["date", "hour", "app_id", "name", "hours", "units"]], use_container_width=True)
 
     # --- 6. Enter Meter Reading ---
@@ -371,21 +382,30 @@ def main_app():
 
     # --- 7. Usage Analysis ---
     elif menu == "7. Usage analysis":
-        st.header("📈 Usage Analysis")
+        st.header("📈 Usage Analysis & Cost Per Appliance")
         if not usage_logs:
             st.info("No usage data yet.")
         else:
             df = pd.DataFrame(usage_logs)
             
-            st.subheader("Top Energy-Consuming Appliances")
-            top_apps = df.groupby("name")["units"].sum().reset_index().sort_values(by="units", ascending=False)
-            st.dataframe(top_apps, use_container_width=True)
+            # Aggregate per appliance
+            app_summary = df.groupby("name").agg({"units": "sum", "hours": "sum"}).reset_index()
+            total_units_all = app_summary["units"].sum()
+            
+            # Calculate cost share per appliance proportionally based on units
+            total_bill_all = calculate_bill(total_units_all)
+            app_summary["Estimated Cost (Rs)"] = app_summary["units"].apply(lambda u: round((u / total_units_all) * total_bill_all, 2) if total_units_all > 0 else 0)
+            app_summary["Total Units (kWh)"] = app_summary["units"].round(3)
+            app_summary["Total Hours"] = app_summary["hours"].round(1)
+            
+            st.subheader("💡 Appliance-wise Breakdown (Units & Cost)")
+            st.dataframe(app_summary[["name", "Total Units (kWh)", "Total Hours", "Estimated Cost (Rs)"]], use_container_width=True)
 
-            st.subheader("Peak Usage Hours")
+            st.subheader("🔥 Peak Usage Hours")
             peak_hours = df.groupby("hour")["units"].sum().reset_index().sort_values(by="units", ascending=False)
             st.dataframe(peak_hours, use_container_width=True)
 
-            st.subheader("Budget Check")
+            st.subheader("🎯 Budget Check")
             st.write(f"Monthly Target Budget: Rs {target_budget}")
             for m in sorted(monthly_summary.keys()):
                 bill_val = monthly_summary[m]["bill"]
@@ -397,9 +417,7 @@ def main_app():
     # --- 8. Graphs ---
     elif menu == "8. Graphs":
         st.header("📊 Graphs & Visualizations")
-        if not matplotlib_ready():
-            st.warning("Matplotlib is not installed.")
-        elif not usage_logs:
+        if not usage_logs:
             st.info("No usage data to draw the graph.")
         else:
             df = pd.DataFrame(usage_logs)
@@ -471,10 +489,6 @@ def main_app():
         current_dir = os.getcwd()
         st.info(f"Current working directory path: `{current_dir}`")
         st.write("Note: On cloud hosting (like Streamlit Cloud), file paths refer to the remote server container.")
-
-
-def matplotlib_ready():
-    return plt is not None
 
 
 # --- CONTROL FLOW ---
